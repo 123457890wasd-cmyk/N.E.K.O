@@ -2049,10 +2049,21 @@
                     // （窗口换成屏幕 → 给一张没有 Avatar 的窗口图叠字）。
                     var nativeSourceId = S.selectedScreenSourceId;
                     try {
+                        // format:'jpeg' 让主进程走低开销路径：bounded thumbnailSize 单遍
+                        // 枚举 + toJPEG 编码，替代全分辨率抓帧 + PNG 编码。后者在主线程的
+                        // 开销会拖住 WH_MOUSE_LL 全局鼠标钩子（表现为鼠标卡顿数秒）。
+                        // 旧桌面壳（桥不支持 options）会忽略该参数、仍回 PNG，
+                        // 由下面 normalizeNativeCaptureDataUrlForStream 兜底转码。
                         var direct = await window.captureDesktopSourceWithTimeout(
                             desktopProvider,
                             'captureSourceAsDataUrl',
-                            nativeSourceId
+                            nativeSourceId,
+                            {
+                                format: 'jpeg',
+                                maxWidth: C.MAX_SCREENSHOT_WIDTH || 1280,
+                                maxHeight: C.MAX_SCREENSHOT_HEIGHT || 720,
+                                quality: 80
+                            }
                         );
                         if (direct && direct.success && direct.dataUrl) {
                             // 桌面壳的 NativeImage.toDataURL() 通常出 PNG，而后端屏幕数据
@@ -2329,10 +2340,20 @@
             // 捕获前钉住源 ID：下面是异步的，事后再读会拿新源解释旧帧。
             var nativeSourceId = S.selectedScreenSourceId;
             try {
+                // format:'jpeg'：主进程低开销路径（bounded 单遍 + toJPEG），
+                // 避免全分辨率 PNG 抓帧/编码拖住主线程的全局鼠标钩子（鼠标卡顿）。
+                // 后端 compress_screenshot 用 Pillow 解码，格式无关；旧桌面壳
+                // 忽略该参数仍回 PNG，行为同旧版。
                 var direct = await window.captureDesktopSourceWithTimeout(
                     desktopProvider,
                     'captureSourceAsDataUrl',
-                    nativeSourceId
+                    nativeSourceId,
+                    {
+                        format: 'jpeg',
+                        maxWidth: C.MAX_SCREENSHOT_WIDTH || 1280,
+                        maxHeight: C.MAX_SCREENSHOT_HEIGHT || 720,
+                        quality: 80
+                    }
                 );
                 if (direct && direct.success && direct.dataUrl) {
                     if (discardSupersededRememberedFrame('主进程直接捕获')) {
