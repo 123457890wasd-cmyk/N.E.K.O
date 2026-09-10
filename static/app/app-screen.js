@@ -1409,12 +1409,18 @@
                 await stopScreenSharing(true);
                 return false;
             }
+            // format:'jpeg'：主进程走 bounded 单遍 + toJPEG 低开销路径，避免每秒一帧的
+            // 全分辨率 PNG 抓帧/编码拖住主线程的 WH_MOUSE_LL 全局鼠标钩子（鼠标卡顿）。
+            // 后端屏幕流只收 JPEG；主进程直接出 JPEG 时 normalize 会原样透传，渲染端
+            // 不再付 canvas 重编码。旧桌面壳忽略 options，行为同旧版。
             var result = await window.captureDesktopSourceWithTimeout(
                 provider,
                 'captureSourceAsDataUrl',
                 sourceId,
                 {
+                    format: 'jpeg',
                     maxWidth: C.MAX_SCREENSHOT_WIDTH || 1280,
+                    maxHeight: C.MAX_SCREENSHOT_HEIGHT || 720,
                     quality: 80
                 }
             );

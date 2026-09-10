@@ -4407,12 +4407,24 @@
                             }
                             var dataUrl = null;
                             var captureResult = null;
+                            // OCR tick 是周期性路径：不传 options 时主进程按整窗物理分辨率
+                            // 抓帧 + PNG 编码，会拖住 WH_MOUSE_LL 全局鼠标钩子（鼠标卡顿）。
+                            // 走 bounded JPEG 路径（与 proactive vision 同机制）；OCR 需要
+                            // 比视觉模型 720p 略高的文字保真度，故用 1600×900 q85。
+                            // 旧桌面壳忽略 options，行为同旧版（全分辨率 PNG）。
+                            var ocrCaptureOptions = {
+                                format: 'jpeg',
+                                maxWidth: 1600,
+                                maxHeight: 900,
+                                quality: 85
+                            };
                             if (typeof dc.captureSourceWithoutNeko === 'function') {
                                 try {
                                     captureResult = await window.captureDesktopSourceWithTimeout(
                                         dc,
                                         'captureSourceWithoutNeko',
-                                        matched.id
+                                        matched.id,
+                                        ocrCaptureOptions
                                     );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_woNekoErr) {
@@ -4424,7 +4436,8 @@
                                     captureResult = await window.captureDesktopSourceWithTimeout(
                                         dc,
                                         'captureSourceAsDataUrl',
-                                        matched.id
+                                        matched.id,
+                                        ocrCaptureOptions
                                     );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_dataUrlErr) {
