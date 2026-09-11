@@ -1,7 +1,7 @@
 {
   "name": "asar_tools",
   "version": "1.0.0",
-  "description": "",
+  "description": "Helper CLI to patch/verify/rollback N.E.K.O's app.asar for the cursor-stutter fix.",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -9,7 +9,10 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
-    "@electron/asar": "^4.3.0"
+    "@electron/asar": "^3.2.10"
   }
 }

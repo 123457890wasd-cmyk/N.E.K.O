@@ -2,7 +2,7 @@
 
 > 适用版本：**v0.9.0.1_win**（`S:\Relax_event\N.E.K.O_v0.9.0.1_win\resources\app.asar`）
 >
-> 状态（2026-09-10 更新）：**已定位真根因并部署第二版修复**。第一版（PowerShell→Win32 helper）是误诊，见下。
+> 状态（2026-09-11 更新）：**已定位真根因并部署第二版修复**。第一版（PowerShell→Win32 helper）是误诊，见下。PR #3092 review 提出的工具链问题已于 2026-09-11 逐条加固，详见文末「PR #3092 review 后续加固」。
 
 ## 诊断结论（2026-09-10 修正）
 
@@ -78,7 +78,44 @@ cp bin/static/app/app-proactive.js.bak-20260910 bin/static/app/app-proactive.js
 
 - 补丁仍在已装 asar 内，**无害但未被使用**（症状期间 helper 从未启动）。
 - `neko_cursor_helper.exe`（`resources/bin/`）保留——它修的"spawn PowerShell 开销"是真实存在的另一个小问题（对话框打开时的 CPU 尖峰），留待上游评估。
-- 第一版文件（`neko_cursor_helper.c` / `compile.bat` / `patch-app-asar.js` / `system-cursor-visibility-service.js.patch`）保留在本目录供审计；`patch-app-asar.js install` 现在会因 PATCH_MARKER 已存在而 no-op。
+- 第一版文件（`neko_cursor_helper.c` / `compile.bat` / `patch-app-asar.js` / `system-cursor-visibility-service.js.patch`）保留在本目录供审计；`patch-app-asar.js install` 对已打补丁的 asar 会跳过重打包，但仍会（重新）部署 helper，便于补救"helper 被删/被杀软隔离"的情况。
+
+## PR #3092 review 后续加固（2026-09-11）
+
+上游 PR #3092（第一版工具包）被 bot 审出 19 条问题，逐条复核后按下列方式处置。**本目录的所有文件都对应"第一版"工具链**——它是仓库内的审计/兜底手段，真根因（截图主线程编码）已在第二版修复并由前端源码承担。
+
+### 已修（P1）
+
+| 位置 | 问题 | 修法 |
+|---|---|---|
+| `patch-app-asar.js` | helper 部署目标由 `--helper` 的父目录推导，传了会把 exe 自我复制 | 部署目标**恒**取 `path.dirname(asar)/bin/`，不再受 `--helper` 影响 |
+| `patch-app-asar.js` | `.original_backup` 存在即沿用，升级后会拿旧版备份回滚 | 改为 sha256 校验：当前 asar 未打补丁且与备份不一致 → 视为上游升级，重新备份 |
+| `patch-app-asar.js` | 重打包替换非原子，第二步失败会让 app 无法启动 | `asar→.old`、`.new→asar` 两步，第二步失败立即回滚 `.old→asar` |
+| `patch-app-asar.js` | 已 patched 时提前 return，跳过 helper 部署 | 重排控制流：无论是否重打都执行 helper 部署；且 `PATCH_MARKER` 判定提前到 `ORIGINAL_SNIPPET` 之前（否则已 patched 的 asar 重跑会误报） |
+| `compile.bat` | `cd` 到作者机器绝对路径，他人无法编译 | 改为 `pushd "%~dp0"`（脚本所在目录） |
+| `compile.bat` | `dir` 覆盖 cl 的 `%ERRORLEVEL%`，坏了也报成功 | 用 `CL_EXIT` 先存 cl 退出码，诊断后再 `exit /b %CL_EXIT%` |
+| `native-system-cursor.js` | `restore()` 失败仍清空状态 → 光标可能永久透明 | 仅 `SPI_SETCURSORS` 成功时清空；失败保留映射供下次重试 |
+| `native-system-cursor.js` | `SetSystemCursor` 失败时句柄泄漏 | 失败分支调用 `DestroyCursor` 回收 |
+| `native-system-cursor.js` | 部分 ID 失败后 `hide()` 因非空而短路，失败 ID 永不重试 | 改为按 ID 跟踪（`Map`）+ 记录失败集，下次 `hide()` 重试失败 ID |
+| `system-cursor-ipc.js` | 只在 `will-quit`/`before-quit` 恢复；renderer 关闭/崩溃后光标永久隐藏 | 监听 `web-contents-created` → 每个 webContents 挂 `destroyed` / `render-process-gone`，按 webContents 维度引用计数，归零才真正 `restore` |
+| `system-cursor-preload.js` | wrapper 先调 `original()` 再发 IPC，旧 PowerShell 广播路径仍被触发 | 彻底替换原函数（不再调用 `original`），避免第二条 PowerShell 路径 |
+
+### 已修（P2）
+
+| 位置 | 问题 | 修法 |
+|---|---|---|
+| `tools/asar_tools/package.json` | `@electron/asar@4.x` 要求 Node ≥22.12，与主工程 `^20.19` 兼容性差 | 降到 `^3.2.10`（实测锁到 3.4.1，`engines.node>=10.12`）；并用到的 `extractAll`/`extractFile`/`createPackageWithOptions` API 在 3.x 全部存在 |
+
+### 未改（有理由）
+
+- **多窗口 hide lease 的完整实现**：属于 N.E.K.O.-PC 主进程侧契约（见 `docs/design/yui-guide-system-cursor-hiding.md`）。本目录的 `system-cursor-ipc.js` 已给出引用计数 + lifecycle 的参考实现，但桌面宿主需自行按窗口/session 落地；仓库内这些文件是**集成示例**，不会被运行时加载。
+
+### 行为变化（重要）
+
+- `install` **必须**显式传 `--helper <编译产出的 exe>`，不再有"默认去 resources/bin 找"的隐式行为（那个默认在全新安装时必然失败）。
+- `verify` 的 helper 路径同样恒取 `asar 同级 bin/`。
+- **rollback 需要一份真实的"未打补丁"`.original_backup`**。本机当前**没有**这样一份原始 asar（历史上第一次 apply 时没有保存干净原件），所以本机 rollback 目前不可用；如需可回滚基线，请用安装包重建一份未打补丁的 asar，或从上游 v0.9.0.1_win 原版复制。脚本在缺备份时会**报错退出**（而非静默还原一个已打补丁的 asar）。
+- 这些改动经沙箱端到端验证：全新安装 → verify → 幂等重装（不覆盖原件备份）→ 删 helper 重装修复 → rollback 还原 → 模拟升级后重新备份，全部通过。
 
 ## 上游修复建议（N.E.K.O.-PC 私有仓库）
 
