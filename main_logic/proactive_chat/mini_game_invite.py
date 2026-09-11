@@ -892,6 +892,101 @@ _LETTER_ONLY_KW_RE = re.compile(r"^[A-Za-z0-9\s'\-Ѐ-ӿ]+$")
 _KEYWORD_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
 
 
+# ---------- User-initiated mini-game invite (no pending state) ----------
+# When the *user* proactively asks to play a game (e.g., "我们来玩" / "let's
+# play" / "踢足球吧"), there is no pending model-delivered invite to respond
+# to. Without this path the user message falls through to ordinary LLM chat
+# and the model would role-play a soccer game in text — see the
+# `_maybe_apply_mini_game_invite_keyword` Path 2 docstring.
+#
+# Detection uses the ``invite`` category in ``MINI_GAME_INVITE_KEYWORDS``
+# (kept in config so all native locales are versioned together). Priority is
+# decline > later > invite, mirroring the existing accept-priority chain: if
+# the user expressed a clear refusal / deferral alongside "play" intent, we
+# refuse to launch. The game-name extractor below lets callers honor explicit
+# game mentions ("踢足球" → soccer) and fall back to a random pick otherwise.
+
+# Game name hints used to extract a specific game_type from the user's text.
+# Only keys listed in MINI_GAME_INVITE_AVAILABLE_GAMES are honored at match
+# time, so adding a new game here is safe even before the game ships.
+_USER_INITIATED_GAME_NAME_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "soccer": (
+        "soccer", "football",
+        "足球", "踢球", "踢足球", "踢球吧",
+    ),
+    "badminton": (
+        "badminton", "shuttlecock",
+        "羽毛球", "打羽毛球", "羽毛球吧",
+    ),
+}
+
+
+def _extract_user_initiated_game_type(norm_text: str) -> str | None:
+    """Return the specific game_type the user named, or ``None`` for caller-pick.
+
+    Same locale-aware word-boundary rule as :func:`_keyword_matches` (ASCII /
+    Cyrillic via ``\\b``; CJK / Hiragana / Katakana / Hangul via substring).
+    Only games present in ``MINI_GAME_INVITE_AVAILABLE_GAMES`` are returned.
+    """
+    for game_type, keywords in _USER_INITIATED_GAME_NAME_KEYWORDS.items():
+        if game_type not in MINI_GAME_INVITE_AVAILABLE_GAMES:
+            continue
+        for kw in keywords:
+            if _keyword_matches(kw, norm_text):
+                return game_type
+    return None
+
+
+def _match_user_initiated_invite_intent(text: str) -> tuple[bool, str | None]:
+    """Detect a user-initiated mini-game invite in free-text.
+
+    Returns ``(matched, game_type_hint)``. ``game_type_hint`` is the specific
+    game the user named (e.g., "踢足球" → ``"soccer"``), or ``None`` to let
+    the caller pick. All native locales are scanned (users may type in a
+    language different from the active UI language) — same rationale as
+    :func:`_match_mini_game_invite_keyword`.
+
+    Priority: **decline > later > invite**. If the user expressed a clear
+    refusal or deferral alongside "play" intent, refuse to launch.
+
+    Empty / unmatched text returns ``(False, None)``.
+    """
+    if not text:
+        return False, None
+    norm = text.lower().strip()
+    if not norm:
+        return False, None
+    hit_invite = False
+    hit_later = False
+    hit_decline = False
+    for lang_kw in MINI_GAME_INVITE_KEYWORDS.values():
+        if not hit_invite and any(
+            _keyword_matches(kw, norm) for kw in lang_kw.get('invite', [])
+        ):
+            hit_invite = True
+        if not hit_later and any(
+            _keyword_matches(kw, norm) for kw in lang_kw.get('later', [])
+        ):
+            hit_later = True
+        if not hit_decline and any(
+            _keyword_matches(kw, norm) for kw in lang_kw.get('decline', [])
+        ):
+            hit_decline = True
+    if hit_decline or hit_later:
+        return False, None
+    # A specific game-name mention ("踢足球" / "play soccer") is also strong
+    # invite intent — e.g. "踢足球吧" has no generic "let's play" phrase but
+    # clearly asks to start a game. We require the mention to NOT be paired
+    # with decline / later keywords (already checked above) so "算了不踢" still
+    # wins as decline.
+    game_hint = _extract_user_initiated_game_type(norm)
+    if game_hint is not None:
+        hit_invite = True
+    if not hit_invite:
+        return False, None
+    return True, game_hint
+
+
 def _keyword_matches(keyword: str, norm_text: str) -> bool:
     """Locale-aware substring/word-boundary match.
 
@@ -954,20 +1049,129 @@ def _maybe_apply_mini_game_invite_keyword(
 ) -> dict[str, Any] | None:
     """Apply mini-game invite keywords for one user-message text entry.
 
-    Pending invites try accept, decline, and later keywords. Without a pending
-    invite this helper is a no-op: ordinary chat text must not launch mini
-    games implicitly. This helper does not consume the user message; normal
-    chat handling should still continue.
+    Two paths:
+
+    1. **Pending invite exists** → scan for accept / decline / later response
+       keywords. This is the original "model invited, user replies" path; the
+       result drives a ChoicePrompt outcome (open_game / cooldown / suppress).
+
+    2. **No pending invite** → scan for *user-initiated* invite keywords
+       (``_match_user_initiated_invite_intent``). On hit we synthesize a
+       pending state, immediately apply ``accept`` and return
+       ``action: open_game`` so the frontend launches a game window directly.
+       This is the path that fixes the "user proactively invites but the
+       model just hallucinates" bug — without it, ``MINI_GAME_INVITE_KEYWORDS``
+       had no "user-initiated" entry point, so the user's "let's play soccer"
+       message fell through to ordinary LLM chat and the model would role-play
+       the game in text.
+
+    The user-initiated path honors the global ``MINI_GAME_INVITE_ENABLED``
+    kill-switch but bypasses per-character cooldown: the cooldown gates
+    *model* spam-invites, not user-initiated launches. It also marks
+    ``_invite_ever_delivered`` in-memory so the proactive pipeline's
+    force-first branch won't re-fire on a user who already knows the feature.
+
+    Both paths return a result dict (or ``None``); ``turn.py`` pushes
+    ``mini_game_invite_resolved`` for any truthy result. This helper does not
+    consume the user message — the LLM still gets to respond in character.
     """
     state = _mini_game_invite_state.get(lanlan_name)
-    if not state or state.get('delivered_at') is None or state.get('responded_at') is not None:
+    # Path 1: pending invite → response keywords (accept / decline / later).
+    if state and state.get('delivered_at') is not None and state.get('responded_at') is None:
+        choice = _match_mini_game_invite_keyword(text)
+        if choice is None:
+            return None
+        result = _apply_mini_game_invite_choice(lanlan_name, choice, source='keyword')
+        if result.get('action') == 'ignored':
+            return None
+        return result
+
+    # Path 2: no pending invite → user-initiated invite intent.
+    if not MINI_GAME_INVITE_ENABLED:
         return None
-    choice = _match_mini_game_invite_keyword(text)
-    if choice is None:
+    matched, game_hint = _match_user_initiated_invite_intent(text)
+    if not matched:
         return None
-    result = _apply_mini_game_invite_choice(lanlan_name, choice, source='keyword')
-    if result.get('action') == 'ignored':
+
+    # Pick a game: user-specified > default. Bypass the per-character cooldown
+    # filter (cooldown gates *model* spam-invites; user explicitly asked, so
+    # we honor that — see the module docstring's "user-initiated" rationale).
+    if game_hint and game_hint in MINI_GAME_INVITE_AVAILABLE_GAMES:
+        game_type = game_hint
+    else:
+        candidates = [
+            g for g in MINI_GAME_INVITE_AVAILABLE_GAMES
+            if g in MINI_GAME_INVITE_LINES_BY_GAME
+        ]
+        if not candidates:
+            logger.info(
+                "[%s] user-initiated mini-game invite: no available game_type",
+                lanlan_name,
+            )
+            return None
+        import random as _random
+        game_type = _random.choice(candidates)
+
+    # Synthesize a pending state so _apply_mini_game_invite_choice(accept) can
+    # run; this also gives the launch URL a session_id for dedupe.
+    state = _mini_game_invite_state.setdefault(
+        lanlan_name,
+        {
+            'delivered_at': None,
+            'responded_at': None,
+            'chats_since_response': 0,
+            'last_response_choice': None,
+            'suppressed_until': 0,
+            'pending_session_id': None,
+            'last_game_type': '',
+            'cooldown_remaining_by_game': {},
+        },
+    )
+    # Always reset response-side fields so a second user-initiated launch
+    # isn't mistaken for an "already_responded" stale state. User-initiated
+    # is explicit and per-message; each call should get a fresh session_id
+    # and a clean accept. The cooldown is still recorded (and honored by
+    # *model*-driven delivery) — see the module docstring's "user-initiated
+    # bypasses model cooldown gates" comment.
+    state['responded_at'] = None
+    state['last_response_choice'] = None
+    state['pending_session_id'] = None
+    invite_session_id = str(uuid4())
+    state['delivered_at'] = time.time()
+    state['pending_session_id'] = invite_session_id
+    state['last_game_type'] = game_type
+
+    result = _apply_mini_game_invite_choice(
+        lanlan_name, 'accept', source='user_invite',
+    )
+    if result.get('action') != 'open_game' or not result.get('game_url'):
+        # Roll back the synthetic state on failure so the next user turn isn't
+        # stuck thinking there's a pending invite.
+        state['delivered_at'] = None
+        state['pending_session_id'] = None
+        logger.warning(
+            "[%s] user-initiated mini-game invite failed: %r",
+            lanlan_name, result,
+        )
         return None
+
+    # Mark ever_delivered in-memory so force-first doesn't re-fire on a user
+    # who already used the feature. Persistent write is best-effort — the
+    # next model-driven delivery will atomically update totals + ever_delivered
+    # via _record_invite_delivery_persistent.
+    try:
+        from main_logic.proactive_chat import state as _state_mod
+        _state_mod._invite_ever_delivered[lanlan_name] = True
+    except Exception as exc:
+        logger.debug(
+            "[%s] user-initiated invite: in-memory ever_delivered set failed: %s",
+            lanlan_name, exc,
+        )
+
+    logger.info(
+        "[%s] user-initiated mini-game invite -> %s",
+        lanlan_name, result.get('game_url'),
+    )
     return result
 
 

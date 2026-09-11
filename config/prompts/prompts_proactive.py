@@ -4006,6 +4006,16 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
             "没空",
         ],
         "later": ["回头", "等会", "等下", "晚点", "一会", "等等", "稍后", "过会"],
+        # invite：用户**主动邀请**玩小游戏时的意图词。跟 accept / decline / later
+        # 互相独立——消费点（mini_game_invite._match_user_initiated_invite_intent）
+        # 在「无 pending 邀请」分支扫描本类，命中即直接合成 pending + accept 启动
+        # 一局（绕过来一局 prompt，因为用户已经表达了要玩）。与 accept 词条有部分
+        # 重叠（"来吧" / "一起玩"），但因两个 matcher 走不同 state 条件（pending vs
+        # 无 pending），不会冲突。
+        "invite": [
+            "我们玩", "来玩", "玩一局", "玩一盘", "玩一下", "玩一场", "玩会",
+            "来一局", "来一盘", "来一场", "开一局", "再玩", "再来一局",
+        ],
     },
     # 繁体是**独立一块**，不是 zh 的另一种写法：这张表匹配的是用户实际打出来的
     # 字，与界面语言无关（消费点 mini_game_invite.py 是 .values() 全语种遍历）。
@@ -4030,6 +4040,11 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
             "沒空",
         ],
         "later": ["待會", "等會", "等下", "晚點", "一會", "等等", "稍後", "過會"],
+        # 與 zh 的 invite 對應（繁中用字）
+        "invite": [
+            "我們玩", "來玩", "玩一局", "玩一盤", "玩一下", "玩一場", "玩會",
+            "來一局", "來一盤", "來一場", "開一局", "再玩", "再來一局",
+        ],
     },
     "en": {
         # 'play' 太宽——"don't want to play" 会被 accept 误命中。改用 phrase。
@@ -4072,12 +4087,33 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
             "not yet",
         ],
         "later": ["later", "in a bit", "in a minute", "in a moment", "after this"],
+        # invite: user-initiated "I want to play" intents. Avoids phrases that
+        # would clash with accept/decline (e.g. "let's play" / "wanna play" are
+        # accept responses; here we use the more explicit "play a game" / "play
+        # with me" forms for the no-pending path).
+        "invite": [
+            "play a game",
+            "play with me",
+            "want to play",
+            "let's go",
+            "start a game",
+            "play now",
+            "wanna play a game",
+            "i want to play",
+            "let's play a game",
+        ],
     },
     "ja": {
         # 'やる' 太宽（'やめる' 含子串），换成 'やるよ'。
         "accept": ["やろう", "いいよ", "うん", "はい", "やるよ", "やります"],
         "decline": ["パス", "嫌", "いいえ", "やめる", "いやだ"],
         "later": ["あとで", "今度", "また今度", "もうちょい", "ちょっと待って"],
+        # ユーザー発動の招待（pending なし経路）。accept の "やろう" と重なるが
+        # 別 state 条件で動くので衝突しない。より明示的な phrase だけ採用。
+        "invite": [
+            "遊ぼう", "遊ぼうよ", "遊ぼうか", "遊びたい", "ゲームしよう",
+            "やろうよ", "ゲームやろう", "もう一局", "また遊ぼう",
+        ],
     },
     "ko": {
         # '안' 太宽（'안녕' / '안 그래도' 都会命中），改用 phrase。
@@ -4086,11 +4122,22 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
         "accept": ["좋아", "그래", "가자", "ㅇㅇ"],
         "decline": ["싫어", "아니", "됐어", "안 해"],
         "later": ["나중", "이따", "잠시", "잠깐만"],
+        # 사용자 발동 초대 (pending 없을 때 경로). accept 의 "하자" 류와 일부
+        # 겹치지만 state 조건이 달라 충돌 없음.
+        "invite": [
+            "게임하자", "게임할래", "놀자", "같이 놀자", "게임 시작",
+            "한 게임", "한 판", "또 하자",
+        ],
     },
     "ru": {
         "accept": ["да", "давай", "конечно", "хорошо", "ок"],
         "decline": ["нет", "не хочу", "откажусь", "пас"],
         "later": ["потом", "позже", "попозже", "не сейчас"],
+        # Приглашение, инициированное пользователем (путь без pending).
+        "invite": [
+            "поиграем", "сыграем", "давай поиграем", "давай сыграем",
+            "хочу играть", "давай в игру", "ещё партию", "ещё раз",
+        ],
     },
     "es": {
         "accept": [
@@ -4118,6 +4165,15 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
             "en un minuto",
             "después de esto",
         ],
+        # Invitación iniciada por el usuario (ruta sin pending).
+        "invite": [
+            "vamos a jugar",
+            "una partida",
+            "jugar ahora",
+            "vamos a una partida",
+            "otra partida",
+            "juguemos una partida",
+        ],
     },
     "pt": {
         "accept": ["sim", "claro", "vamos", "vamos jogar", "boa", "quero jogar"],
@@ -4137,6 +4193,15 @@ MINI_GAME_INVITE_KEYWORDS: dict[str, dict[str, list[str]]] = {
             "daqui a pouco",
             "em um minuto",
             "depois disso",
+        ],
+        # Convite iniciado pelo usuário (rota sem pending).
+        "invite": [
+            "vamos jogar",
+            "uma partida",
+            "jogar agora",
+            "vamos a uma partida",
+            "outra partida",
+            "joguemos uma partida",
         ],
     },
 }
