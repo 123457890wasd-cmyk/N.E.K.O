@@ -3,6 +3,69 @@
 > 适用版本：**v0.9.0.1_win**（`S:\Relax_event\N.E.K.O_v0.9.0.1_win\resources\app.asar`）
 >
 > 状态（2026-09-11 更新）：**已定位真根因并部署第二版修复**。第一版（PowerShell→Win32 helper）是误诊，见下。PR #3092 review 提出的工具链问题已于 2026-09-11 逐条加固，详见文末「PR #3092 review 后续加固」。
+>
+> ⚠️ **部署目标纠正（2026-09-11 晚）**：本机真正在运行的实例是 **Steam 版**
+> `Z:\SteamLibrary\steamapps\common\n.e.k.o\`，不是上面那个 v0.9.0.1_win 安装。
+> 之前所有 asar / static 补丁都打在**没被运行**的 S: 安装上，所以线上症状一直
+> 复现。Steam 版现已按下方「Steam 版部署记录」完成部署。
+
+## Steam 版部署记录（2026-09-11）
+
+目标：`Z:\SteamLibrary\steamapps\common\n.e.k.o\`（Steam app_id 4099310，
+用户数据根 `%LOCALAPPDATA%\N.E.K.O`）。
+
+### 为什么不能照搬 S: 安装的文件
+
+Steam build ≠ v0.9.0.1_win build。两版 `package.json` 版本串相同，但：
+
+| 文件 | 两版差异 |
+|---|---|
+| `src/preload/entries/legacy-pet.js` | Steam 版多 `requestWindowsGraphicsCaptureFallback` / `restartWindowsGraphicsCaptureFallback`（WGC 兼容模式） |
+| `src/preload/bridges/desktop-capture-bridge.js` | 同上 |
+| `src/main.js` | 515 行差异（Steam 渠道特有逻辑） |
+| `src/main/screen-capture-ipc.js` | **除本补丁外逐字节相同**（可直接换） |
+
+结论：**除 `screen-capture-ipc.js` 外必须手工移植 hunk**，整文件覆盖会抹掉 WGC。
+
+### asar 侧（4 文件）
+
+与「第二版修复 / asar 侧」表格相同，逐个手工落到位：
+
+- `screen-capture-ipc.js`：直接取自 S: 安装的已打补丁版本（已验证等价）。
+- `desktop-capture-bridge.js` / `legacy-pet.js`：只改
+  `captureSourceAsDataUrl` / `captureSourceWithoutNeko` 两行签名，保留 WGC 方法。
+- `main.js`：`chatDisplayMediaHandler` 内 `getSources` 加
+  `thumbnailSize: { width: 1, height: 1 }`。
+
+### 前端侧（3 文件）
+
+`resources\bin\static\app\{app-proactive,app-screen,app-websocket}.js` 整文件覆盖为
+仓库 HEAD 版本。已核实 Steam 版这三个文件 == 仓库 `69e0196d`，且
+`git diff --stat 69e0196d..HEAD -- static/` 只动这三个文件 → 直接覆盖无基线漂移。
+
+### 验证
+
+- 重打包后 asar entry 列表与原版**完全一致**（3475 条）；`app.asar.unpacked`
+  35 文件逐字节一致；改动文件回读一致；`node --check` 全过。
+- 离线行为测试（真模块 + 桩 Electron 依赖，13 项全过）：不传 options 仍走
+  1920×1080 PNG（旧行为不变）；`format:'jpeg'` 走 bounded 1280×720 + `toJPEG`；
+  屏幕源 jpeg **只枚举一次**（跳过两遍原生采样）；脏值被 clamp；`format:'png'`
+  保持旧路径。
+
+### 备份与回滚
+
+```bash
+# 退出 N.E.K.O 后：
+cd /z/SteamLibrary/steamapps/common/n.e.k.o/resources
+cp app.asar.bak-20260911-steam app.asar
+cd bin/static/app
+for f in app-proactive app-screen app-websocket; do cp $f.js.bak-20260911-steam $f.js; done
+```
+
+其他备份：`app.asar.prepatch-20260911-steam`（重命名保留的原版）。
+
+> **Steam 会校验/更新游戏文件**（本次 Steam 在 09-11 13:10 刚覆盖过整个安装）。
+> 任何一次 Steam 更新都会冲掉这些补丁，需要重新部署。
 
 ## 诊断结论（2026-09-10 修正）
 
