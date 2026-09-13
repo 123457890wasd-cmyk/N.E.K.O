@@ -322,6 +322,7 @@ _NATIVE_OK_THEN_SWITCH = (
 _HELPER_TMPL = """
 const results = {};
 let selected = __SOURCE_ID__;
+const C = { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 };
 const S = {
   screenCaptureStream: null,
   screenCaptureStreamLastUsed: null,
@@ -1157,6 +1158,7 @@ recaptureWithoutNeko({
 
 _PROACTIVE_REMEMBERED_TMPL = """
 const results = { calls: [] };
+const C = { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 };
 const S = {
   selectedScreenSourceId: __SOURCE_ID__,
   screenCaptureStream: null,
@@ -1293,6 +1295,7 @@ const window = {
   maybeClearSourceOnNotFound: () => {}
 };
 const WebSocket = { OPEN: 1 };
+const C = { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 };
 const S = {
   isRecording: true,
   socket: { readyState: 1, send: (payload) => results.sent.push(payload) },
